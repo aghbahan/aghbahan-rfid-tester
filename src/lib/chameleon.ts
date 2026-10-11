@@ -1,10 +1,12 @@
-// Сервис управления Chameleon Ultra: подключение один раз → авто-переподключение при
-// пробуждении гаджета → эмуляция метки по типу → окно «держи у двери» → авто-отключение.
-// Плюс: авто-сон при простое (нет действий N секунд → отключаюсь → гаджет спит) и
-// восстановление устройства после перезагрузки страницы (getDevices).
+// Сервис управления Chameleon Ultra.
+// Два пути подключения, без конкуренции:
+//  • Первое сопряжение (pair) — по клику, может показать окно выбора (нужен жест).
+//  • Переподключение — фоновый цикл: когда гаджет просыпается (кнопкой), цепляемся сами,
+//    без окна выбора. Кнопка «Подключить» в состоянии «Спит» просто будит/запускает цикл.
+// Простой на связи N секунд → авто-отключение → гаджет спит. Подробный журнал.
 
 import { Buffer, ChameleonUltra, DeviceMode, Slot, TagType } from 'chameleon-ultra.js'
-import ReconnectWebbleAdapter, { isPaired, tryRestoreDevice } from './bleAdapter'
+import ReconnectWebbleAdapter, { forgetDevice, isPaired, tryRestoreDevice } from './bleAdapter'
 import type { Card } from './cards'
 
 export type ConnState = 'unpaired' | 'connecting' | 'ready' | 'emitting' | 'sleeping'
@@ -18,9 +20,10 @@ export interface ChSnapshot {
 }
 
 const WORK_SLOT = Slot.SLOT_1
-const HOLD_SECONDS = 15 // держим связь после излучения (окно «поднеси к двери»)
-const SLEEP_SETTLE_MS = 5000 // пауза после отключения, чтобы гаджет успел заснуть
-const IDLE_DISCONNECT_MS = 25000 // нет действий на связи → отключаюсь → гаджет спит
+const HOLD_SECONDS = 15
+const SLEEP_SETTLE_MS = 5000
+const IDLE_DISCONNECT_MS = 25000
+const LOOP_INTERVAL_MS = 2000
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 function errMsg(e: unknown): string {
@@ -35,6 +38,7 @@ class ChameleonService {
   #paused = false
   #connectInFlight = false
   #loopRunning = false
+  #waitLogged = false
   #state: ConnState = 'unpaired'
   #battery: number | null = null
   #activeCardId: string | null = null
@@ -46,6 +50,7 @@ class ChameleonService {
 
   constructor() {
     this.ultra.emitter.on('connected', () => {
+      this.#waitLogged = false
       this.#setState('ready')
       this.#log('На связи ✅', 'ok')
       void this.#readBattery()
@@ -56,6 +61,10 @@ class ChameleonService {
       this.#clearHold()
       this.#clearIdle()
       this.#setState(this.#active ? 'sleeping' : 'unpaired')
+    })
+    this.ultra.emitter.on('error', (e: any) => {
+      const m = errMsg(e?.cause ?? e)
+      if (!/disconnect|gattserver/i.test(m)) this.#log('BLE: ' + m, 'error')
     })
   }
 
@@ -90,21 +99,26 @@ class ChameleonService {
     this.#used = true
   }
 
-  async #connectGuarded(): Promise<boolean> {
+  // Единственная точка фактического подключения (защищена от параллельных вызовов).
+  async #connect(verbose: boolean): Promise<boolean> {
     if (this.ultra.isConnected()) return true
-    if (this.#connectInFlight) return false
+    if (this.#connectInFlight) {
+      if (verbose) this.#log('Уже подключаюсь, секунду…')
+      return false
+    }
     this.#connectInFlight = true
     try {
       await this.ultra.connect()
       return true
-    } catch {
+    } catch (e) {
+      if (verbose) this.#log('Не вышло: ' + errMsg(e), 'error')
       return false
     } finally {
       this.#connectInFlight = false
     }
   }
 
-  // ---------- старт: вернуть ранее выданное устройство (после перезагрузки) ----------
+  // ---------- старт приложения: вернуть устройство после перезагрузки ----------
   async init(): Promise<void> {
     if (this.#inited) return
     this.#inited = true
@@ -115,7 +129,7 @@ class ChameleonService {
         this.#active = true
         this.#paused = false
         this.#setState('sleeping')
-        this.#log('Гаджет запомнен. Разбуди его кнопкой — подключусь сам.')
+        this.#log('Гаджет запомнен. Нажми кнопку на нём — подключусь сам.')
         this.#startReconnectLoop()
       } else {
         this.#setState('unpaired')
@@ -125,36 +139,63 @@ class ChameleonService {
     }
   }
 
-  // ---------- первое сопряжение (по клику) ----------
+  // ---------- кнопка «Подключить» ----------
   async pair(): Promise<void> {
     await this.#ensureAdapter()
     this.#active = true
     this.#paused = false
-    this.#setState('connecting')
-    this.#log('Подключение…')
-    const ok = await this.#connectGuarded()
-    if (ok) {
-      this.#log('Подключено ✅', 'ok')
-      this.#startReconnectLoop()
-    } else {
-      this.#log('Не удалось подключиться. Разбуди гаджет кнопкой и попробуй ещё раз.', 'error')
-      if (!this.ultra.isConnected()) this.#setState(isPaired() ? 'sleeping' : 'unpaired')
+
+    if (!isPaired()) {
+      // первое сопряжение — по клику можно показать окно выбора
+      this.#setState('connecting')
+      this.#log('Подключаюсь…')
+      const ok = await this.#connect(true)
+      if (ok) this.#startReconnectLoop()
+      else if (!this.ultra.isConnected()) this.#setState('unpaired')
+      return
     }
+
+    // уже сопряжён → переподключение делает фоновый цикл при пробуждении гаджета
+    this.#setState('connecting')
+    this.#log('Подключаюсь… если гаджет спит — нажми кнопку на нём.')
+    this.#waitLogged = true
+    this.#startReconnectLoop()
+    void (async () => {
+      await sleep(7000)
+      if (!this.ultra.isConnected() && this.#state === 'connecting') {
+        this.#setState('sleeping')
+        this.#log('Пока не вижу гаджет. Нажми кнопку на нём и жми «Подключить».')
+      }
+    })()
   }
 
-  // ---------- фоновое переподключение при пробуждении (без окна выбора) ----------
+  // ---------- фоновое переподключение (без окна выбора) ----------
   #startReconnectLoop(): void {
     if (this.#loopRunning) return
     this.#loopRunning = true
     void (async () => {
       while (this.#active) {
-        if (!this.ultra.isConnected() && !this.#paused) {
-          await this.#connectGuarded()
+        if (!this.ultra.isConnected() && !this.#paused && isPaired()) {
+          if (!this.#waitLogged) {
+            this.#log('⏳ Жду пробуждения гаджета (нажми кнопку на нём)…')
+            this.#waitLogged = true
+          }
+          await this.#connect(false)
         }
-        await sleep(1500)
+        await sleep(LOOP_INTERVAL_MS)
       }
       this.#loopRunning = false
     })()
+  }
+
+  // ---------- сброс привязки (если устройство «залипло») ----------
+  reset(): void {
+    this.#active = false
+    forgetDevice()
+    this.#clearHold()
+    this.#clearIdle()
+    this.#setState('unpaired')
+    this.#log('Устройство сброшено. Нажми «Подключить» и выбери его заново.')
   }
 
   // ---------- эмуляция метки ----------
@@ -232,6 +273,7 @@ class ChameleonService {
     this.#activeCardId = null
     this.#clearIdle()
     this.#paused = true
+    this.#waitLogged = false
     this.#setState('sleeping')
     await this.ultra.disconnect().catch(() => {})
     await sleep(SLEEP_SETTLE_MS)
@@ -248,7 +290,7 @@ class ChameleonService {
           return
         }
       } catch {
-        /* старая прошивка / занято — пробуем ещё раз */
+        /* занято / старая прошивка — повтор */
       }
       await sleep(400)
     }

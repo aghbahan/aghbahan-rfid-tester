@@ -58,6 +58,15 @@ export default function App() {
         </div>
       )}
 
+      {(snap.state === 'sleeping' || snap.state === 'unpaired') && (
+        <button
+          className="mt-2 block text-xs text-muted-foreground underline underline-offset-2"
+          onClick={() => chameleon.reset()}
+        >
+          Не подключается? Сбросить устройство и выбрать заново
+        </button>
+      )}
+
       <div className="mb-2 mt-6 flex items-center justify-between">
         <h2 className="text-sm font-semibold text-muted-foreground">Адреса {cards.length ? `(${cards.length})` : ''}</h2>
         <Button
