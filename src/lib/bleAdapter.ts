@@ -95,12 +95,15 @@ export default class ReconnectWebbleAdapter {
           listenerAttached = true
         }
 
-        for (let i = 0; i < 20 && !gattConnected(); i++) {
-          await savedDevice.gatt?.connect().catch(() => {})
-          if (gattConnected()) break
-          await sleep(100)
+        if (!gattConnected()) {
+          // с таймаутом, чтобы не зависнуть на спящем устройстве
+          try {
+            await Promise.race([savedDevice.gatt!.connect(), sleep(4000)])
+          } catch {
+            /* не удалось — статус проверим ниже */
+          }
         }
-        if (!gattConnected()) throw new Error('Не удалось подключиться к Chameleon')
+        if (!gattConnected()) throw new Error('Не удалось подключиться — разбуди гаджет кнопкой')
 
         const serv = await savedDevice.gatt!.getPrimaryService(ULTRA_SERV_UUID)
         const rxChar = await serv.getCharacteristic(ULTRA_RX_CHAR_UUID)

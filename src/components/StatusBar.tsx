@@ -31,7 +31,7 @@ export function StatusBar({ snap, onPair }: { snap: ChSnapshot; onPair: () => vo
             {snap.battery}%
           </span>
         )}
-        {snap.state === 'unpaired' && (
+        {(snap.state === 'unpaired' || snap.state === 'sleeping') && (
           <Button size="sm" onClick={onPair}>
             Подключить
           </Button>

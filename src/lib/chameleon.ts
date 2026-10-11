@@ -4,7 +4,7 @@
 // восстановление устройства после перезагрузки страницы (getDevices).
 
 import { Buffer, ChameleonUltra, DeviceMode, Slot, TagType } from 'chameleon-ultra.js'
-import ReconnectWebbleAdapter, { tryRestoreDevice } from './bleAdapter'
+import ReconnectWebbleAdapter, { isPaired, tryRestoreDevice } from './bleAdapter'
 import type { Card } from './cards'
 
 export type ConnState = 'unpaired' | 'connecting' | 'ready' | 'emitting' | 'sleeping'
@@ -47,6 +47,7 @@ class ChameleonService {
   constructor() {
     this.ultra.emitter.on('connected', () => {
       this.#setState('ready')
+      this.#log('На связи ✅', 'ok')
       void this.#readBattery()
       this.#startIdle()
     })
@@ -136,8 +137,8 @@ class ChameleonService {
       this.#log('Подключено ✅', 'ok')
       this.#startReconnectLoop()
     } else {
-      this.#log('Не удалось подключиться. Разбуди гаджет кнопкой и попробуй снова.', 'error')
-      if (!this.ultra.isConnected()) this.#setState('unpaired')
+      this.#log('Не удалось подключиться. Разбуди гаджет кнопкой и попробуй ещё раз.', 'error')
+      if (!this.ultra.isConnected()) this.#setState(isPaired() ? 'sleeping' : 'unpaired')
     }
   }
 
