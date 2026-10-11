@@ -22,7 +22,6 @@ export interface TagOption {
 export const TAG_OPTIONS: TagOption[] = [
   { value: 'standard', label: 'Стандартная — EM-Marine (125 кГц)', brand: 'Стандартная', chipType: 'EM410X', hint: 'Flipper: 125 kHz RFID → Read' },
   { value: 'boon', label: 'BOON — MIFARE (13.56 МГц)', brand: 'BOON', chipType: 'MIFARE_1K', hint: 'Flipper: NFC → Read' },
-  { value: 'fnet', label: 'FNET — MIFARE (13.56 МГц)', brand: 'FNET', chipType: 'MIFARE_1K', hint: 'Flipper: NFC → Read' },
   { value: 'hikvision', label: 'Hikvision — MIFARE (13.56 МГц)', brand: 'Hikvision', chipType: 'MIFARE_1K', hint: 'Flipper: NFC → Read' },
   { value: 'urban', label: 'urban — MIFARE (13.56 МГц)', brand: 'urban', chipType: 'MIFARE_1K', hint: 'Flipper: NFC → Read' },
   { value: 'other-mifare', label: 'Другая MIFARE (13.56 МГц)', brand: 'Другая', chipType: 'MIFARE_1K', hint: 'Flipper: NFC → Read' },

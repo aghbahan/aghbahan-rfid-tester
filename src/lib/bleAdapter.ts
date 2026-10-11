@@ -1,8 +1,9 @@
 /**
  * Кастомный Web Bluetooth адаптер для chameleon-ultra.js.
- * Основан на MIT-адаптере библиотеки (WebbleAdapter), но ЗАПОМИНАЕТ выбранное
- * устройство между отключениями — чтобы переподключаться БЕЗ окна выбора, когда
- * Chameleon просыпается. Окно выбора показывается только при первом сопряжении.
+ * Основан на MIT-адаптере библиотеки, но ЗАПОМИНАЕТ выбранное устройство между
+ * отключениями → тихое переподключение (без окна выбора), когда Chameleon просыпается.
+ * Плюс tryRestoreDevice(): после перезагрузки страницы пытается вернуть ранее выданное
+ * устройство через navigator.bluetooth.getDevices() — тогда повторный выбор не нужен.
  */
 
 const ULTRA_SERV_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e'
@@ -17,13 +18,32 @@ const BLE_SCAN_FILTERS: BluetoothLEScanFilter[] = [
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
-// Помним устройство на время жизни страницы → тихое переподключение.
 let savedDevice: BluetoothDevice | null = null
+let listenerAttached = false
+
 export function isPaired(): boolean {
   return savedDevice !== null
 }
 export function forgetDevice(): void {
   savedDevice = null
+  listenerAttached = false
+}
+
+// Вернуть ранее выданное устройство без окна выбора (после перезагрузки). true = нашли.
+export async function tryRestoreDevice(): Promise<boolean> {
+  try {
+    const bt: any = (globalThis as any)?.navigator?.bluetooth
+    if (typeof bt?.getDevices !== 'function') return false
+    const devs: BluetoothDevice[] = await bt.getDevices()
+    const found = devs.find((d) => (d.name ?? '').toLowerCase().includes('chameleon'))
+    if (found) {
+      savedDevice = found
+      return true
+    }
+  } catch {
+    /* getDevices может быть недоступен — не страшно */
+  }
+  return false
 }
 
 export default class ReconnectWebbleAdapter {
@@ -61,24 +81,28 @@ export default class ReconnectWebbleAdapter {
         if (!supported) throw new Error('Web Bluetooth не поддерживается (нужен Chrome на Android/ПК)')
 
         if (savedDevice === null) {
-          // первое сопряжение — показывает окно выбора (нужен жест пользователя)
+          // первое сопряжение — окно выбора (нужен жест пользователя)
           savedDevice = await this.#bluetooth.requestDevice({
             filters: BLE_SCAN_FILTERS,
             optionalServices: [ULTRA_SERV_UUID],
           })
-          savedDevice!.addEventListener('gattserverdisconnected', () => {
+        }
+        if (savedDevice === null) throw new Error('Устройство не выбрано')
+        if (!listenerAttached) {
+          savedDevice.addEventListener('gattserverdisconnected', () => {
             void ultra.disconnect(new Error('gattserverdisconnected')).catch(() => {})
           })
+          listenerAttached = true
         }
 
         for (let i = 0; i < 20 && !gattConnected(); i++) {
-          await savedDevice!.gatt?.connect().catch(() => {})
+          await savedDevice.gatt?.connect().catch(() => {})
           if (gattConnected()) break
           await sleep(100)
         }
         if (!gattConnected()) throw new Error('Не удалось подключиться к Chameleon')
 
-        const serv = await savedDevice!.gatt!.getPrimaryService(ULTRA_SERV_UUID)
+        const serv = await savedDevice.gatt!.getPrimaryService(ULTRA_SERV_UUID)
         const rxChar = await serv.getCharacteristic(ULTRA_RX_CHAR_UUID)
         const txChar = await serv.getCharacteristic(ULTRA_TX_CHAR_UUID)
         this.#rxChar = rxChar

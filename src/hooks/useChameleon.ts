@@ -19,6 +19,7 @@ export function useChameleon() {
       const time = new Date().toLocaleTimeString('ru-RU', { hour12: false })
       setLogs((prev) => [...prev.slice(-80), { id: n++, time, msg, type }])
     })
+    void chameleon.init() // вернуть ранее выданное устройство после перезагрузки
     return () => {
       unsub()
       unlog()
